@@ -83,8 +83,12 @@ function validateOverride(name: string, override: ModeConfigOverride, source: st
 		issues.push({ path: `${path}.instructions`, message: "instructions must be a string." });
 		delete override.instructions;
 	}
-	if (override.extraInstructions !== undefined && (!Array.isArray(override.extraInstructions) || override.extraInstructions.some((i) => typeof i !== "string"))) {
-		issues.push({ path: `${path}.extraInstructions`, message: "extraInstructions must be an array of strings." });
+	if (
+		override.extraInstructions !== undefined &&
+		(typeof override.extraInstructions !== "string" &&
+			(!Array.isArray(override.extraInstructions) || override.extraInstructions.some((i) => typeof i !== "string")))
+	) {
+		issues.push({ path: `${path}.extraInstructions`, message: "extraInstructions must be a string or an array of strings." });
 		delete override.extraInstructions;
 	}
 	if (override.allowWriteTools !== undefined && typeof override.allowWriteTools !== "boolean") {
@@ -127,7 +131,8 @@ export function applyOverride(mode: ModeDefinition, override: ModeConfigOverride
 		thinkingLevel: override?.thinkingLevel !== undefined ? (override.thinkingLevel ?? undefined) : mode.defaultPolicy.thinkingLevel,
 	};
 	const baseInstructions = override?.instructions ?? mode.instructions;
-	const extra = override?.extraInstructions ?? [];
+	const extraValue = override?.extraInstructions;
+	const extra = extraValue === undefined ? [] : typeof extraValue === "string" ? [extraValue] : extraValue;
 	const instructions =
 		extra.length > 0 ? `${baseInstructions}\n\n${extra.join("\n")}` : baseInstructions;
 	return {
@@ -176,6 +181,7 @@ export function pickInitialMode(
 	persisted: string | undefined,
 	defaultMode: string | undefined,
 	issues: ConfigValidationIssue[],
+	canonicalize: (name: string) => string | undefined = (name) => name.trim().toLowerCase(),
 ): EffectiveMode | undefined {
 	const candidates: Array<{ value: string | undefined; label: string }> = [
 		{ value: cliMode, label: "CLI flag --modes" },
@@ -184,7 +190,8 @@ export function pickInitialMode(
 	];
 	for (const candidate of candidates) {
 		if (candidate.value) {
-			const mode = effective.get(candidate.value.trim().toLowerCase());
+			const canonical = canonicalize(candidate.value);
+			const mode = canonical ? effective.get(canonical) : undefined;
 			if (mode) return mode;
 			issues.push({ path: "state", message: `Unknown or disabled mode "${candidate.value}" (${candidate.label}); falling back to default.` });
 		}

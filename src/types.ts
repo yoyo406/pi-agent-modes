@@ -70,8 +70,8 @@ export interface ModeConfigOverride {
   description?: string;
   /** Replaces the default `instructions` entirely when set. */
   instructions?: string;
-  /** Appended to the effective instructions. */
-  extraInstructions?: string[];
+  /** Appended to the effective instructions; accepts one string or an array. */
+  extraInstructions?: string | string[];
   allowWriteTools?: boolean;
   bash?: BashPolicy;
   blockTools?: string[];
@@ -97,11 +97,22 @@ export interface EffectiveMode extends ModeDefinition {
   policy: ModePolicy;
 }
 
+/** A persisted plan step, kept dependency-free for session restoration. */
+export interface PersistedPlanStep {
+  step: number;
+  text: string;
+  completed: boolean;
+}
+
 /** Persisted per-session mode state (stored via `pi.appendEntry`). */
 export interface ModeState {
+  version: 2;
   mode: string;
   previousMode?: string;
   changedAt: number;
+  planSteps?: PersistedPlanStep[];
+  planExecuting?: boolean;
+  planMarkdown?: string;
 }
 
 /** Default policy factory. */

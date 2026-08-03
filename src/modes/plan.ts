@@ -25,10 +25,12 @@ Workflow:
    - Impact: what else could be affected (tests, callers, data)
    - Steps: a numbered, ordered implementation checklist (the extension auto-tracks these as a progress list)
    - Validation: how the change should be validated (tests to run, manual checks, rollback path)
-3. End by proposing the validation step and suggest the user switch to a working mode with "/mode build" (or "/mode debug" for bug fixing) to execute the plan. When you switch to build, mark each step complete with a "[DONE:n]" tag (where n is the step number) in your response as you finish it.`,
+3. End by submitting the complete plan with the pi_modes_plan_complete tool as a standalone final action when the plan is decision-complete. Include the Markdown plan and a structured steps array. If that tool is unavailable, use a numbered "Plan:" section as a legacy fallback. Suggest the user switch to a working mode with "/mode build" (or "/mode debug" for bug fixing) to execute the plan. When you switch to build, mark each step complete with a "[DONE:n]" tag (where n is the step number) in your response as you finish it.`,
 	defaultPolicy: defaultPolicy({
 		allowWriteTools: false,
 		bash: "readOnly",
+		blockUnknownTools: true,
+		allowTools: ["pi_modes_plan_complete"],
 		thinkingLevel: "high",
 	}),
 	defaultEnabled: true,

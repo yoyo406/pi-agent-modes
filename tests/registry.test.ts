@@ -67,11 +67,12 @@ test("BUILTIN_MODES have unique names and non-empty definitions", () => {
 		assert.ok(!names.has(mode.name), `duplicate mode ${mode.name}`);
 		names.add(mode.name);
 	}
-	// Read-only modes must not allow writes by default.
+	// Read-only modes must not allow writes or unknown extension tools by default.
 	for (const mode of ["ask", "plan", "review"]) {
 		const def = BUILTIN_MODES.find((m) => m.name === mode);
 		assert.equal(def?.defaultPolicy.allowWriteTools, false, `${mode} must default to read-only`);
 		assert.equal(def?.defaultPolicy.bash, "readOnly", `${mode} must default to readOnly bash`);
+		assert.equal(def?.defaultPolicy.blockUnknownTools, true, `${mode} must block unknown tools`);
 	}
 	// Working modes must allow writes by default.
 	for (const mode of ["build", "debug", "yolo"]) {

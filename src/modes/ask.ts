@@ -23,6 +23,7 @@ Behavior:
 	defaultPolicy: defaultPolicy({
 		allowWriteTools: false,
 		bash: "readOnly",
+		blockUnknownTools: true,
 		thinkingLevel: "high",
 	}),
 	defaultEnabled: true,

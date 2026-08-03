@@ -98,11 +98,10 @@ export function evaluateToolCall(request: GuardRequest): GuardDecision {
 /**
  * Compute the active tool set for a mode (defense-in-depth layer 1).
  *
- * Only the built-in mutating tools (`edit`, `write`, `bash` with deny policy)
- * are removed from the model's tool list. `blockTools` entries and unknown
- * custom tools are deliberately LEFT in the list: the `tool_call` hook then
- * intercepts them with an explanatory reason, so the model learns why the
- * call was blocked instead of silently lacking the tool.
+ * Built-in mutating tools and unknown custom tools are removed when their
+ * policy requires it. Explicitly blocked tools remain visible so the
+ * `tool_call` hook can return an explanatory reason instead of silently
+ * hiding a configured restriction.
  */
 export function filterActiveTools(
 	active: readonly string[],
@@ -119,69 +118,224 @@ export function filterActiveTools(
 }
 
 /**
- * Heuristic: is a bash command safe to run in a read-only mode?
- * A command is safe when it matches the read-only allowlist AND does not
- * contain destructive patterns (writes, installs, process/system control).
+ * Validate a bash command for read-only execution.
+ *
+ * This deliberately uses a small shell lexer rather than a regex allowlist.
+ * The validator fails closed for shell control flow, substitutions, redirects,
+ * wrappers, and commands whose flags can execute or write elsewhere. It is
+ * still an extension-level policy, not an OS sandbox (see README).
  */
 export function isSafeBashCommand(command: string): boolean {
-	if (!command.trim()) return false;
-	const destructive = DESTRUCTIVE_PATTERNS.some((pattern) => pattern.test(command));
-	if (destructive) return false;
-	return SAFE_PATTERNS.some((pattern) => pattern.test(command));
+	const segments = tokenizeReadOnlyShell(command);
+	return segments !== undefined && segments.length > 0 && segments.every(isSafeReadOnlySegment);
 }
 
-// ---------------------------------------------------------------------------
-// Command heuristics. The allowlist requires the command to START with a
-// read-only command; the denylist catches mutation regardless of position
-// (e.g. `cat a > b` is caught by the redirect pattern).
-// ---------------------------------------------------------------------------
+interface ShellSegment {
+	words: string[];
+}
 
-const SAFE_PATTERNS: RegExp[] = [
-	/^\s*(cat|head|tail|less|more|zcat|zgrep|zless|gzcat)\b/,
-	/^\s*(grep|rg|ripgrep|egrep|fgrep)\b/,
-	/^\s*(find|fd)\b/,
-	/^\s*(ls|dir|eza|exa)\b/,
-	/^\s*(pwd|realpath|readlink)\b/,
-	/^\s*(echo|printf)\b/,
-	/^\s*(wc|sort|uniq|cut|paste|comm|diff|cmp)\b/,
-	/^\s*(file|stat|du|df|tree)\b/,
-	/^\s*(which|whereis|type|command\s+-v)\b/,
-	/^\s*(env|printenv|export)\b/,
-	/^\s*(uname|whoami|id|hostname|date|cal|uptime)\b/,
-	/^\s*(ps|top|htop|free|vmstat|iostat|ss|netstat|lsof)\b/,
-	/^\s*(git\s+(status|log|diff|show|branch|remote|config|ls-files|ls-tree|rev-parse|describe|tag\s+-l))\b/,
-	/^\s*(git\s+ls-remote)\b/,
-	/^\s*(npm\s+(list|ls|view|info|search|outdated|audit))\b/,
-	/^\s*(yarn\s+(list|info|why|audit))\b/,
-	/^\s*(pnpm\s+(list|ls|view|info|search|outdated|audit))\b/,
-	/^\s*(python3?|node|deno|bun)\s+--version\b/,
-	/^\s*(curl)\b/,
-	/^\s*(wget)\s+(?:-qO-|-O-|-O\s+-)\s/,
-	/^\s*(jq|yq)\b/,
-	/^\s*(awk|sed\s+-n|perl\s+-ne)\b/,
-	/^\s*(bat|batcat)\b/,
-	/^\s*(eza|exa)\b/,
-	/^\s*(gpg)\s+(?:--verify|--list-keys|--list-sigs)\b/,
-	/^\s*(direnv)\s+(?:dump|status)\b/,
-	/^\s*(openssl)\s+(?:x509|rsa|ec|s_client|version)\b/,
+/**
+ * Split a command into a pipeline while rejecting every other shell operator.
+ * Quoted pipes are treated as ordinary argument characters.
+ */
+function tokenizeReadOnlyShell(command: string): ShellSegment[] | undefined {
+	if (!command.trim()) return undefined;
+
+	const segments: ShellSegment[] = [];
+	let words: string[] = [];
+	let token = "";
+	let quote: "'" | '"' | undefined;
+	let escaped = false;
+	let tokenStarted = false;
+
+	const flushToken = (): void => {
+		if (!tokenStarted) return;
+		words.push(token);
+		token = "";
+		tokenStarted = false;
+	};
+	const flushSegment = (): boolean => {
+		flushToken();
+		if (words.length === 0) return false;
+		segments.push({ words });
+		words = [];
+		return true;
+	};
+
+	for (let index = 0; index < command.length; index++) {
+		const character = command[index];
+		if (character === undefined) continue;
+
+		if (escaped) {
+			token += character;
+			tokenStarted = true;
+			escaped = false;
+			continue;
+		}
+
+		if (quote === "'") {
+			if (character === "'") quote = undefined;
+			else token += character;
+			tokenStarted = true;
+			continue;
+		}
+
+		if (quote === '"') {
+			if (character === '"') {
+				quote = undefined;
+				continue;
+			}
+			if (character === "\\") {
+				const next = command[index + 1];
+				if (next === undefined || next === "\n" || next === "\r") return undefined;
+				token += next;
+				tokenStarted = true;
+				index++;
+				continue;
+			}
+			// Variable and command expansion are rejected even inside double quotes.
+			if (character === "$" || character === "`") return undefined;
+			token += character;
+			tokenStarted = true;
+			continue;
+		}
+
+		if (/\s/.test(character)) {
+			if (character === "\n" || character === "\r") return undefined;
+			flushToken();
+			continue;
+		}
+		if (character === "\\") {
+			escaped = true;
+			tokenStarted = true;
+			continue;
+		}
+		if (character === "'" || character === '"') {
+			quote = character;
+			tokenStarted = true;
+			continue;
+		}
+		if (character === "|") {
+			if (command[index + 1] === "|") return undefined;
+			if (!flushSegment()) return undefined;
+			continue;
+		}
+		// Reject command lists, background jobs, redirections, substitutions and
+		// grouping. A quoted operator never reaches this branch.
+		if (";&<>$`(){}".includes(character)) return undefined;
+
+		token += character;
+		tokenStarted = true;
+	}
+
+	if (quote !== undefined || escaped || !flushSegment()) return undefined;
+	return segments;
+}
+
+const READ_ONLY_COMMANDS = new Set([
+	"cat", "head", "tail", "less", "more", "zcat", "zgrep", "zless", "gzcat",
+	"grep", "rg", "ripgrep", "egrep", "fgrep", "find", "fd", "ls", "dir", "eza", "exa",
+	"pwd", "realpath", "readlink", "echo", "printf", "wc", "sort", "uniq", "cut", "paste",
+	"comm", "diff", "cmp", "file", "stat", "du", "df", "tree", "which", "whereis", "type",
+	"uname", "whoami", "id", "hostname", "date", "cal", "uptime", "ps", "top", "htop",
+	"free", "vmstat", "iostat", "ss", "netstat", "lsof", "git", "npm", "yarn", "pnpm",
+	"jq", "yq", "awk", "sed", "bat", "batcat", "gpg", "direnv", "openssl", "curl", "wget",
+	"python", "python3", "node", "deno", "bun", "command",
+]);
+
+const FORBIDDEN_ARGUMENTS = [
+	/^(?:-i|--in-place|--delete|--exec(?:dir)?|--ok(?:dir)?|-x|--exec-batch)$/i,
+	/^(?:--(?:output|output-document|remote-name|upload-file|config|data|data-raw|data-binary|data-urlencode|form|request|post-data|method|body-data))=/i,
+	/^(?:-T)$/i,
+	/^--(?:upload-pack|exec-path|config-env)$/i,
 ];
 
-const DESTRUCTIVE_PATTERNS: RegExp[] = [
-	/\b(rm|rmdir|unlink|trash)\b/,
-	/\b(mv|cp|ln|install|dd|shred|truncate)\b/,
-	/\b(mkdir|touch|mktemp)\b/,
-	/\b(chmod|chown|chgrp|setfacl|setfattr)\b/,
-	/\b(tee|split|csplit|yes|mkfifo|mknod)\b/,
-	/(^|[^<])(>|>>)(?!=)/, // output redirection
-	/\b(npm|yarn|pnpm|bun|npx|deno)\s+(install|add|remove|uninstall|update|ci|link|publish|run|exec|dlx|test)\b/,
-	/\b(pip|pip3|uv)\s+(install|uninstall|download|sync|add|remove|run)\b/,
-	/\b(cargo|go)\s+(build|run|test|install|add|remove|publish|fmt|vet|clean)\b/,
-	/\b(apt|apt-get|aptitude|dnf|yum|pacman|brew|port)\s+(install|remove|purge|update|upgrade|autoremove|clean)\b/,
-	/\b(git)\s+(add|commit|push|pull|merge|rebase|reset|checkout|switch|restore|stash|cherry-pick|revert|tag|init|clone|clean|gc|prune|fetch)\b/,
-	/\b(sudo|su|doas)\b/,
-	/\b(kill|pkill|killall|nice|renice)\b/,
-	/\b(reboot|shutdown|halt|poweroff|systemctl|service|initctl|rc-service)\b/,
-	/\b(vim?|nano|emacs|code|subl|micro|nvim)\b/,
-	/\b(docker|podman|nerdctl|kubectl|helm)\b/,
-	/\b(format|mkfs|fdisk|parted|mount|umount)\b/,
-];
+function isSafeReadOnlySegment(segment: ShellSegment): boolean {
+	const [rawCommand, ...args] = segment.words;
+	if (!rawCommand) return false;
+	if (rawCommand.includes("/")) return false;
+	const command = rawCommand.toLowerCase();
+	if (!READ_ONLY_COMMANDS.has(command)) return false;
+	if (args.some((argument) => FORBIDDEN_ARGUMENTS.some((pattern) => pattern.test(argument)))) return false;
+
+	// Interpreter-like expressions and shell wrappers are not accepted. This
+	// catches mutation hidden inside awk, sed, or an opaque command argument.
+	const text = segment.words.join(" ");
+	if (/\b(?:system|exec|eval|spawn|popen|subprocess|unlink|rename|chmod|chown)\s*[({'[]/i.test(text)) return false;
+	if (args.some((argument) => /(?:^|\s)(?:w|e)\s+[^\s]/i.test(argument))) return false;
+
+	switch (command) {
+		case "git":
+			return isSafeGitCommand(args);
+		case "npm":
+		case "yarn":
+		case "pnpm":
+			return isSafePackageQuery(args);
+		case "python":
+		case "python3":
+		case "node":
+		case "deno":
+		case "bun":
+			return args.length === 1 && (args[0] === "--version" || args[0] === "-V");
+		case "command":
+			return args[0] === "-v" || args[0] === "--verbose";
+		case "sort":
+			return !args.some((argument) => argument === "-o" || argument === "--output" || argument.startsWith("--output="));
+		case "sed":
+			return (args.includes("-n") || args.includes("--quiet")) && !args.some((argument) => /(?:^|[;{}\/\d])w(?:\s|$)|(?:^|[;{}\/])e(?:\s|$)/i.test(argument));
+		case "curl":
+			return !args.some((argument) => /^(?:-o|--output(?:=|$)|-O|--remote-name|--remote-name-all|-T|--upload-file|-d|--data(?:-|=|$)|-F|--form(?:=|$)|-X|--request(?:=|$)|-K|--config(?:=|$)|--url-query|--trace(?:=|$)|--stderr(?:=|$)|--dump-header(?:=|$)|--cookie-jar(?:=|$))/.test(argument));
+		case "wget":
+			return hasStdoutWgetOutput(args);
+		case "find":
+			return !args.some((argument) => /^(?:-exec|--exec|--execdir|-ok|--ok|--delete|-fprint|-fprintf|-fls)$/i.test(argument));
+		case "fd":
+			return !args.some((argument) => /^(?:-x|--exec|-X|--exec-batch)$/i.test(argument));
+		case "gpg":
+			return ["--verify", "--list-keys", "--list-sigs", "--list-secret-keys", "--fingerprint"].includes(args[0] ?? "");
+		case "openssl":
+			return !args.some((argument) => /^(?:-out|--out|--keyout|-passout)$/i.test(argument));
+		case "direnv":
+			return args[0] === "dump" || args[0] === "status";
+		case "awk":
+			return !text.includes(">");
+		default:
+			return true;
+	}
+}
+
+function isSafeGitCommand(args: string[]): boolean {
+	const subcommand = args[0];
+	if (!subcommand) return false;
+	if (["add", "commit", "push", "pull", "fetch", "merge", "rebase", "reset", "checkout", "switch", "restore", "stash", "cherry-pick", "revert", "init", "clone", "clean", "gc", "prune"].includes(subcommand)) return false;
+	if (["diff", "log", "show", "grep"].includes(subcommand)) {
+		return !args.some((argument) => ["--ext-diff", "--textconv", "--no-index", "--output", "--filters"].includes(argument) || argument.startsWith("--output="));
+	}
+	if (subcommand === "config") {
+		return ["--get", "--get-all", "--get-regexp", "--list", "-l", "--show-origin"].some((flag) => args.includes(flag));
+	}
+	if (subcommand === "remote") {
+		const action = args[1];
+		return action === undefined || action === "-v" || action === "--verbose" || action === "get-url" || (action === "show" && args.includes("-n"));
+	}
+	if (subcommand === "branch") {
+		return !args.some((argument) => /^(?:-+[dDmcMCfF]|--(?:delete|move|copy|force|edit-description|set-upstream-to))/.test(argument));
+	}
+	if (subcommand === "tag") return args.length === 1 || args.includes("-l") || args.includes("--list");
+	return ["status", "ls-files", "ls-tree", "rev-parse", "describe", "ls-remote", "merge-base", "blame", "cat-file"].includes(subcommand);
+}
+
+function isSafePackageQuery(args: string[]): boolean {
+	return ["list", "ls", "view", "info", "why", "search", "outdated", "audit"].includes(args[0] ?? "");
+}
+
+function hasStdoutWgetOutput(args: string[]): boolean {
+	for (let index = 0; index < args.length; index++) {
+		const argument = args[index];
+		if (argument === undefined) continue;
+		if (argument === "-qO-" || argument === "-O-" || argument === "--output-document=-") return true;
+		if (/^(?:--save-cookies|--post-file|--body-data|--method)(?:=|$)/i.test(argument)) return false;
+		if ((argument === "-O" || argument === "--output-document") && args[index + 1] === "-") return true;
+	}
+	return false;
+}

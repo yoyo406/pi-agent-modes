@@ -10,9 +10,13 @@
  */
 import { RpcClient } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const CLI = "/home/eleve/.local/share/pi-node/node-v22.23.1-linux-x64/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js";
-const EXT = "/mnt/c/VibeCode/pi-agent-modes/extensions/index.ts";
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const PI_ENTRY = dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")));
+const CLI = process.env.PI_CLI ?? resolve(PI_ENTRY, "cli.js");
+const EXT = resolve(REPO_ROOT, "extensions/index.ts");
 const ROOT = "/tmp/modes-e2e";
 const CWD = `${ROOT}/project`;
 const SESSION_DIR = `${ROOT}/rpc-sessions`;

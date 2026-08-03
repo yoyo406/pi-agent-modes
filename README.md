@@ -2,12 +2,12 @@
 
 Switchable workflow modes for the [Pi coding agent](https://github.com/earendil-works/pi-coding-agent): `ask`, `plan`, `build`, `review`, `debug`, `yolo`.
 
-Each mode changes the agent's system instructions **and** its real tool access:
+Each mode changes the agent's system instructions **and** its effective tool access:
 
-- Read-only modes (`ask`, `plan`, `review`) remove `edit`/`write` from the model's
-  tool list, restrict `bash` to a read-only allowlist, and block every
-  disallowed tool call in a `tool_call` hook — the model physically cannot modify
-  your files.
+- Read-only modes (`ask`, `plan`, `review`) remove `edit`/`write` and unknown
+  extension tools from the model's tool list, validate `bash` with a strict
+  fail-closed read-only shell policy, and block every disallowed call in a
+  `tool_call` hook.
 - Working modes (`build`, `debug`, `yolo`) restore full access.
 - The current mode is injected into the system prompt on every turn and
   displayed in the status line.
@@ -28,13 +28,15 @@ ask          ← widget directly above the input bar (TUI)
 | Plan-step tracking | In `plan` mode the model's numbered `Plan:` steps are extracted into a progress widget (☐/☑) and the footer shows `📋 n/m`; `[DONE:n]` marks steps complete during execution |
 | Plan → build transition | After a plan is detected, an interactive prompt offers to switch to `build` and inject the plan as a kickoff message |
 | Mode widget | The current mode name is displayed right above the input bar, so you always see where you are |
-| Real read-only enforcement | `pi.setActiveTools()` removes `edit`/`write`/`bash` per policy + a `tool_call` hook blocks everything else with a visible reason |
+| Defense-in-depth read-only enforcement | `pi.setActiveTools()` removes write/unknown tools per policy + a strict shell validator + a `tool_call` hook blocks everything else with a visible reason |
 | `/mode` command | List, switch, aliases, autocomplete (`/mode <TAB>`) |
 | Quick cycle | `alt+m` cycles to the next mode with instant visual feedback |
 | `/mode back` | Return to the previous mode (toggle semantics, also `ctrl+alt+m`) |
-| Persistence | Mode is written to the session (`pi-modes` entry) on every switch **and** re-persisted each turn, restored on resume, including forked sessions |
+| Persistence | Mode and plan progress are written to the session (`pi-modes` entries), restored on resume and branch navigation, including forked sessions |
 | Config | Per-project `.pi/modes.config.json` (trust-guarded) + global `~/.pi/agent/modes.config.json` |
 | `--modes <name>` flag | Start a session in a specific mode |
+| Structured plan completion | Plan mode exposes `pi_modes_plan_complete` for explicit, validated plan handoff; legacy `Plan:` parsing remains supported |
+| Plan lifecycle commands | `/mode plan show`, `save`, `export [path]`, and `implement` manage accepted plans without requiring a TUI dialog |
 | Per-mode instructions | Every mode has its own system-prompt section; override/extend via config |
 
 ## Installation
@@ -64,6 +66,10 @@ The extension is picked up automatically on the next session. Verify with:
 | --- | --- |
 | Show current mode | `/mode` |
 | Switch mode | `/mode plan` |
+| Show current plan | `/mode plan show` |
+| Save plan state | `/mode plan save` |
+| Export plan | `/mode plan export [path]` |
+| Implement accepted plan | `/mode plan implement` |
 | Cycle to next mode | `alt+m` (ask → plan → build → review → debug → yolo → ask) |
 | Return to previous mode | `/mode back` or `ctrl+alt+m` |
 | Aliases | `act` = `build`, `audit` = `review`, `fix` = `debug`, `autopilot`/`go` = `yolo` |
@@ -116,12 +122,12 @@ Config files are JSON with this shape:
       "enabled": true,               // optional, default true
       "description": "…",            // optional, shown in /mode
       "instructions": "…",           // optional, replaces the built-in section
-      "extraInstructions": "…",      // optional, appended to the built-in section
+      "extraInstructions": "…",      // string or string[], appended to the built-in section
       "allowWriteTools": false,      // optional (read-only modes default false)
       "bash": "readOnly",            // optional: "allow" | "readOnly" | "deny"
       "allowTools": [],              // optional: always-allowed tool names
       "blockTools": ["read"],        // optional: tools the hook must block
-      "blockUnknownTools": false,    // optional: block all non-builtin tools
+      "blockUnknownTools": true,     // optional: block all non-builtin tools (default in read-only modes)
       "thinkingLevel": "high"        // optional: force a reasoning level (off|minimal|low|medium|high|xhigh|max; null to clear)
     }
   }
@@ -137,7 +143,7 @@ Locations (both are merged, project wins):
 ### Policy evaluation order
 
 `allowTools` → `blockTools` → `edit`/`write` (`allowWriteTools`) → `bash`
-policy → `blockUnknownTools` (default `false`; `allowTools` always wins).
+policy → `blockUnknownTools` (`true` by default in read-only modes; `allowTools` always wins).
 
 ### Example: lock down `debug` to fixes only
 
@@ -180,26 +186,26 @@ Override or clear per mode in `modes.config.json`:
 
 ## Plan-step tracking
 
-While `plan` mode is active, the model is asked to produce a numbered plan under
-a `Plan:` header. The extension extracts those steps and shows a checklist
-widget above the input bar (`☐` pending / `☑` done) plus a footer counter
-(`📋 n/m`).
+While `plan` mode is active, the preferred completion path is the standalone
+`pi_modes_plan_complete` tool. It accepts the complete Markdown plan and a
+validated `steps` array. Legacy assistants that produce a numbered plan under a
+`Plan:` header remain supported.
 
-- When a plan is detected you get an interactive prompt: **Execute the plan**,
-  **Stay in plan mode**, or **Refine the plan**.
+- The transition prompt is shown only after the complete agent run settles, so
+  tool calls, retries and compaction cannot trigger it prematurely.
 - Choosing *Execute* switches to `build` and injects the remaining steps as a
   kickoff message.
 - During execution the model marks each step complete with a `[DONE:n]` tag;
-  the widget updates live.
+  the widget updates live and progress is persisted.
 
 This mirrors pi's built-in `plan-mode` example, adapted to the multi-mode model.
 
 
 ## Behavior notes
 
-- **Persistence**: the mode is stored in the session file as a `pi-modes`
-  entry and restored on resume (including `--session` and forks). A fresh
-  session (`/new`) starts at the default mode.
+- **Persistence**: the mode and plan progress are stored in the session file as
+  versioned `pi-modes` entries and restored on resume, forks, and `/tree`
+  navigation. A fresh session (`/new`) starts at the default mode.
 - **`/mode back`** remembers only the *previous* mode (a single pointer, not a
   stack). Switching A→B→C then `back` returns to B; the next `back` returns to C.
 - **`--modes <name>`** is read once at startup; it overrides `defaultMode` for
@@ -207,6 +213,29 @@ This mirrors pi's built-in `plan-mode` example, adapted to the multi-mode model.
 - **Mode widget**: the name above the input bar is TUI-only (`ctx.ui.setWidget`,
   placement `aboveEditor`). In print/RPC modes it is skipped, and the footer
   status badge `Ⓜ mode 🔒` remains the source of truth.
+
+## Security boundary
+
+Pi extensions run with the permissions of the Pi process and Pi has no built-in
+OS sandbox. The read-only policy is defense in depth against model tool calls:
+it does not guard your own `!`/`!!` commands, malicious processes, or arbitrary
+code already running on the machine. For untrusted repositories or unattended
+work, use a container, VM, or other OS-level sandbox.
+
+Read-only bash intentionally fails closed for shell lists, redirects, command
+substitution, opaque wrappers, mutating flags, and commands outside its reviewed
+allowlist. Add custom tools explicitly with `allowTools` when you have reviewed
+their behavior:
+
+```json
+{
+  "modes": {
+    "plan": {
+      "allowTools": ["web_search", "lsp_diagnostics"]
+    }
+  }
+}
+```
 
 ## Development
 
@@ -227,8 +256,8 @@ unavailable in `ask` and available in `build`.
 
 ```sh
 npm login
-npm version patch          # bumps 0.1.0 → 0.1.1 and tags
-npm publish                # tarball: extensions/, src/, README.md, LICENSE
+npm version 0.3.0        # create the 0.3.0 release commit and tag
+npm publish                # tarball: extensions/, src/, README.md, CHANGELOG.md, LICENSE
 ```
 
 The package follows the pi package conventions (`docs/packages.md`): the

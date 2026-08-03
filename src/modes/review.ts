@@ -27,6 +27,7 @@ Reference exact file paths and line numbers where possible. Do not modify anythi
 	defaultPolicy: defaultPolicy({
 		allowWriteTools: false,
 		bash: "readOnly",
+		blockUnknownTools: true,
 		thinkingLevel: "high",
 	}),
 	defaultEnabled: true,

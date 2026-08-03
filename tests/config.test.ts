@@ -71,6 +71,14 @@ test("applyOverride merges a config override onto a mode definition", () => {
 	assert.equal(effective.policy.bash, "readOnly");
 });
 
+test("applyOverride accepts a single extra instruction string", () => {
+	const registry = new ModeRegistry();
+	const effective = applyOverride(registry.resolve("plan")!, {
+		extraInstructions: "Prefer the project's existing conventions.",
+	});
+	assert.match(effective.instructions, /existing conventions/);
+});
+
 test("applyOverride with no override keeps defaults", () => {
 	const registry = new ModeRegistry();
 	const effective = applyOverride(registry.resolve("ask")!, undefined);
@@ -107,6 +115,17 @@ test("pickInitialMode priority: CLI > persisted > defaultMode > first enabled", 
 	assert.equal(pickInitialMode(effective, undefined, undefined, "debug", issues)?.name, "debug");
 	// First enabled mode as final fallback
 	assert.equal(pickInitialMode(effective, undefined, undefined, undefined, issues)?.name, "ask");
+	assert.equal(issues.length, 0);
+});
+
+test("pickInitialMode resolves aliases when a canonicalizer is provided", () => {
+	const registry = new ModeRegistry();
+	const effective = resolveEffectiveModes(registry, {});
+	const issues: Array<{ path: string; message: string }> = [];
+	assert.equal(
+		pickInitialMode(effective, "act", undefined, undefined, issues, (name) => registry.canonicalName(name))?.name,
+		"build",
+	);
 	assert.equal(issues.length, 0);
 });
 

@@ -18,8 +18,9 @@
  * `.pi/modes.config.json` (project, only when the project is trusted).
  */
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { Type } from "typebox";
 import { Key, type AutocompleteItem } from "@earendil-works/pi-tui";
 import {
 	CONFIG_DIR_NAME,
@@ -64,9 +65,7 @@ const PLAN_WIDGET_KEY = "pi-modes-plan";
 
 /** Custom message type used to kick off plan execution after a switch. */
 const PLAN_EXECUTE_TYPE = "pi-modes-plan-execute";
-
-/** Tools this extension manages (removed from the active set when restricted). */
-const MANAGED_TOOLS = new Set(["edit", "write", "bash"]);
+const PLAN_COMPLETE_TOOL = "pi_modes_plan_complete";
 
 /** Does the mode need the active tool set to be filtered? `blockTools` entries are handled by the tool_call hook, not by list filtering. */
 function isRestricting(mode: EffectiveMode): boolean {
@@ -106,6 +105,9 @@ export default function (pi: ExtensionAPI): void {
 	let issues: ConfigValidationIssue[] = [];
 	let current: EffectiveMode | undefined;
 	let previousMode: string | undefined;
+	let configuredDefaultMode: string | undefined;
+	/** Whether the startup-only --modes flag selected the initial mode. */
+	let cliModeOverride = false;
 	/** Active tools captured when a restricting mode was entered. */
 	let savedTools: string[] | undefined;
 	/** The thinking level active before a mode forced its own (to restore on exit). */
@@ -116,13 +118,62 @@ export default function (pi: ExtensionAPI): void {
 	let planSteps: PlanStep[] = [];
 	/** True once a plan has been detected and execution is under way. */
 	let planExecuting = false;
+	/** The accepted Markdown plan, when one has been detected. */
+	let planMarkdown = "";
+	/** Candidate plan waiting for the agent run to settle before prompting. */
+	let pendingPlan: PlanStep[] = [];
+
+	function currentModeName(): string | undefined {
+		return current?.name;
+	}
+
+	pi.registerTool({
+		name: PLAN_COMPLETE_TOOL,
+		label: "Complete Plan",
+		description: "Submit a complete implementation plan after exploration. Use this as the final standalone action in plan mode.",
+		parameters: Type.Object({
+			plan: Type.String({ minLength: 1, maxLength: 50000, description: "The complete Markdown implementation plan" }),
+			steps: Type.Array(
+				Type.Object({
+					step: Type.Integer({ minimum: 1 }),
+					text: Type.String({ minLength: 4, maxLength: 1000 }),
+				}),
+				{ minItems: 1, maxItems: 100 },
+			),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			if (currentModeName() !== "plan") {
+				throw new Error("pi_modes_plan_complete is available only while plan mode is active.");
+			}
+			const steps = params.steps.map((step, index) => ({
+				step: index + 1,
+				text: step.text.trim(),
+				completed: false,
+			}));
+			if (steps.some((step) => step.text.length < 4)) {
+				throw new Error("Every plan step must contain at least four non-whitespace characters.");
+			}
+			planSteps = steps;
+			planMarkdown = params.plan.trim();
+			pendingPlan = steps.map((step) => ({ ...step }));
+			updatePlanWidget(ctx);
+			persist();
+			return {
+				content: [{ type: "text", text: `Plan accepted with ${steps.length} step(s).` }],
+				details: { plan: planMarkdown, steps },
+				terminate: true,
+			};
+		},
+	});
 
 	// ------------------------------------------------------------------ tools
 	function applyActiveTools(): void {
 		if (!current) return;
 		if (!isRestricting(current)) {
 			if (savedTools) {
-				pi.setActiveTools(savedTools);
+				// Restore the original snapshot while preserving tools added by
+				// other extensions during the restricted-mode interval.
+				pi.setActiveTools([...new Set([...savedTools, ...pi.getActiveTools()])]);
 				savedTools = undefined;
 			}
 			return;
@@ -133,7 +184,8 @@ export default function (pi: ExtensionAPI): void {
 				.filter((tool) => tool.sourceInfo.source !== "builtin")
 				.map((tool) => tool.name),
 		);
-		pi.setActiveTools(filterActiveTools(pi.getActiveTools(), current.policy, customTools));
+		const candidateTools = [...new Set([...(savedTools ?? []), ...pi.getActiveTools()])];
+		pi.setActiveTools(filterActiveTools(candidateTools, current.policy, customTools));
 	}
 
 	/**
@@ -204,7 +256,41 @@ export default function (pi: ExtensionAPI): void {
 	// ------------------------------------------------------------ persistence
 	function persist(): void {
 		if (!current) return;
-		pi.appendEntry(MODE_STATE_ENTRY_TYPE, buildStateEntry(current.name, previousMode));
+		pi.appendEntry(
+			MODE_STATE_ENTRY_TYPE,
+			buildStateEntry(current.name, previousMode, planSteps, planExecuting, planMarkdown),
+		);
+	}
+
+	function restorePlanState(
+		steps: readonly PlanStep[] | undefined,
+		executing: boolean | undefined,
+		markdown = "",
+	): void {
+		planSteps = steps?.map((step) => ({ ...step })) ?? [];
+		planExecuting = executing === true && planSteps.length > 0;
+		planMarkdown = markdown.trim();
+		pendingPlan = [];
+	}
+
+	function restoreBranchState(ctx: ExtensionContext): void {
+		const persisted = extractState(ctx.sessionManager.getBranch());
+		const initial = pickInitialMode(
+			effective,
+			undefined,
+			persisted?.mode,
+			configuredDefaultMode,
+			issues,
+			(name) => registry.canonicalName(name),
+		);
+		current = initial;
+		previousMode = persisted?.previousMode ? registry.canonicalName(persisted.previousMode) : undefined;
+		restorePlanState(persisted?.planSteps, persisted?.planExecuting, persisted?.planMarkdown);
+		applyActiveTools();
+		applyThinkingLevel();
+		updateStatus(ctx);
+		updateWidget(ctx);
+		updatePlanWidget(ctx);
 	}
 
 	// -------------------------------------------------------------- switching
@@ -230,8 +316,7 @@ export default function (pi: ExtensionAPI): void {
 		// Entering a non-plan mode clears tracked plan steps, unless we are
 		// mid-execution (the Execute flow keeps tracking [DONE:n] in build).
 		if (target.name !== "plan" && !planExecuting) {
-			planSteps = [];
-			planExecuting = false;
+			restorePlanState(undefined, false);
 		}
 		updateStatus(ctx);
 		updateWidget(ctx);
@@ -271,14 +356,65 @@ export default function (pi: ExtensionAPI): void {
 		applyActiveTools();
 		applyThinkingLevel();
 		if (target.name !== "plan" && !planExecuting) {
-			planSteps = [];
-			planExecuting = false;
+			restorePlanState(undefined, false);
 		}
 		updateStatus(ctx);
 		updateWidget(ctx);
 		updatePlanWidget(ctx);
 		persist();
 		ctx.ui.notify(modeNotificationText(target), target.policy.allowWriteTools ? "info" : "warning");
+	}
+
+	async function executePlan(ctx: ExtensionContext): Promise<boolean> {
+		if (current?.name !== "plan" || planSteps.length === 0) {
+			ctx.ui.notify("No executable plan is currently available in plan mode.", "warning");
+			return false;
+		}
+		const candidate = planSteps.map((step) => ({ ...step }));
+		const remaining = candidate.filter((step) => !step.completed).map((step) => `${step.step}. ${step.text}`).join("\n");
+		const first = candidate.find((step) => !step.completed)?.text ?? candidate[0]?.text ?? "the first step";
+		planExecuting = true;
+		const switched = switchTo("build", ctx);
+		if (!switched) {
+			restorePlanState(candidate, false, planMarkdown);
+			updatePlanWidget(ctx);
+			ctx.ui.notify("[modes] Cannot execute the plan because build mode is disabled.", "error");
+			return false;
+		}
+		persist();
+		pi.sendMessage(
+			{
+				customType: PLAN_EXECUTE_TYPE,
+				content: `Execute the plan.\n\nRemaining steps:\n${remaining || "(all steps were already marked complete)"}\n\nStart with: ${first}.\nAfter completing a step, include a [DONE:n] tag in your response.`,
+				display: true,
+			},
+			{ triggerTurn: true, deliverAs: "followUp" },
+		);
+		return true;
+	}
+
+	async function exportPlan(pathArg: string, ctx: ExtensionContext): Promise<void> {
+		if (!planMarkdown.trim()) {
+			ctx.ui.notify("No accepted plan is available to export.", "warning");
+			return;
+		}
+		const relativeOrAbsolute = (pathArg.trim() || "PLAN.md").replace(/^@/, "");
+		const target = resolve(ctx.cwd, relativeOrAbsolute);
+		try {
+			await writeFile(target, `${planMarkdown.trimEnd()}\n`, { encoding: "utf8", flag: "wx" });
+			ctx.ui.notify(`Plan exported to ${target}.`, "info");
+		} catch (error) {
+			ctx.ui.notify(`Could not export plan to ${target}: ${(error as Error).message}`, "error");
+		}
+	}
+
+	function showPlan(ctx: ExtensionContext): void {
+		if (!planSteps.length && !planMarkdown.trim()) {
+			ctx.ui.notify("No accepted plan is currently available.", "info");
+			return;
+		}
+		const steps = planSteps.map((step) => `${step.completed ? "☑" : "☐"} ${step.step}. ${step.text}`).join("\n");
+		ctx.ui.notify(`Plan${planExecuting ? " (implementing)" : ""}:\n${steps || planMarkdown}`, "info");
 	}
 
 	function describeCurrent(): string {
@@ -350,20 +486,35 @@ export default function (pi: ExtensionAPI): void {
 		const loaded = await loadConfigs(ctx);
 		effective = resolveEffectiveModes(registry, loaded.config, loaded.issues);
 		issues = loaded.issues;
+		configuredDefaultMode = loaded.config.defaultMode;
 
 		const cliMode = typeof pi.getFlag("modes") === "string" ? (pi.getFlag("modes") as string) : undefined;
+		cliModeOverride = cliMode !== undefined;
 		const persisted = extractState(ctx.sessionManager.getBranch());
-		const initial = pickInitialMode(effective, cliMode, persisted?.mode, loaded.config.defaultMode, issues);
+		const initial = pickInitialMode(
+			effective,
+			cliMode,
+			persisted?.mode,
+			loaded.config.defaultMode,
+			issues,
+			(name) => registry.canonicalName(name),
+		);
 		current = initial;
-		previousMode = persisted?.previousMode;
+		previousMode = persisted?.previousMode ? registry.canonicalName(persisted.previousMode) : undefined;
+		restorePlanState(persisted?.planSteps, persisted?.planExecuting, persisted?.planMarkdown);
 		applyActiveTools();
 		applyThinkingLevel();
 		updateStatus(ctx);
 		updateWidget(ctx);
 		updatePlanWidget(ctx);
+		if (!cliModeOverride) persist();
 		if (event.reason === "startup" || event.reason === "reload") {
 			reportIssues(ctx);
 		}
+	});
+
+	pi.on("session_tree", (_event, ctx) => {
+		restoreBranchState(ctx);
 	});
 
 	pi.on("session_shutdown", () => {
@@ -371,11 +522,13 @@ export default function (pi: ExtensionAPI): void {
 		effective = new Map();
 		current = undefined;
 		previousMode = undefined;
+		configuredDefaultMode = undefined;
+		cliModeOverride = false;
+		if (savedTools) pi.setActiveTools(savedTools);
 		savedTools = undefined;
 		savedThinkingLevel = undefined;
 		thinkingOverridden = false;
-		planSteps = [];
-		planExecuting = false;
+		restorePlanState(undefined, false);
 	});
 
 	// Read-only enforcement: blocks write tools and unsafe bash.
@@ -390,9 +543,11 @@ export default function (pi: ExtensionAPI): void {
 		if (decision.blocked) return { block: true, reason: decision.reason };
 	});
 
-	// Per-turn system prompt injection.
+	// Re-apply restrictions before every provider request so dynamically activated
+	// extension tools cannot bypass the active mode's tool policy.
 	pi.on("before_agent_start", (event) => {
 		if (!current) return;
+		applyActiveTools();
 		return { systemPrompt: event.systemPrompt + "\n\n" + buildModePromptSection(current) };
 	});
 
@@ -402,7 +557,7 @@ export default function (pi: ExtensionAPI): void {
 	 * offer to execute (which switches to `build` and injects the plan).
 	 * `[DONE:n]` markers mark steps complete during execution.
 	 */
-	pi.on("message_end", async (event, ctx) => {
+	pi.on("message_end", (event, ctx) => {
 		if (!current) return;
 		const text = assistantText(event.message);
 		if (!text) return;
@@ -410,19 +565,41 @@ export default function (pi: ExtensionAPI): void {
 		// Mark completed steps from [DONE:n] markers (execution phase).
 		if (planSteps.length > 0) {
 			const newlyDone = markCompletedSteps(text, planSteps);
-			if (newlyDone > 0) updatePlanWidget(ctx);
+			if (newlyDone > 0) {
+				updatePlanWidget(ctx);
+				persist();
+			}
 		}
 
-		// Only auto-detect a fresh plan while sitting in `plan` mode and not yet executing.
+		// Detect a candidate plan, but wait for agent_settled before asking what to
+		// do next. message_end can fire before sibling tool calls or retries finish.
 		if (current.name !== "plan" || planExecuting) return;
 		const fresh = extractPlanSteps(text);
 		if (fresh.length === 0) return;
 		planSteps = fresh;
+		planMarkdown = text;
+		pendingPlan = fresh.map((step) => ({ ...step }));
 		updatePlanWidget(ctx);
+		persist();
 		ctx.ui.notify(`[modes] Plan detected: ${fresh.length} step(s).`, "info");
+	});
 
-		// Offer an interactive transition (TUI only — skip in print/RPC).
-		if (!ctx.hasUI) return;
+	pi.on("agent_settled", async (_event, ctx) => {
+		if (!current) return;
+
+		if (planExecuting && planSteps.length > 0 && completedCount(planSteps) === planSteps.length) {
+			ctx.ui.notify("[modes] Plan complete.", "info");
+			restorePlanState(undefined, false);
+			updatePlanWidget(ctx);
+			persist();
+			return;
+		}
+
+		// Automatic selection is deliberately TUI-only. RPC clients can use
+		// /mode build explicitly and never get stuck waiting for a dialog.
+		if (current.name !== "plan" || planExecuting || pendingPlan.length === 0 || ctx.mode !== "tui") return;
+		const candidate = pendingPlan.map((step) => ({ ...step }));
+		pendingPlan = [];
 		const choice = await ctx.ui.select("Plan mode — what next?", [
 			"Execute the plan (switch to build)",
 			"Stay in plan mode",
@@ -430,25 +607,14 @@ export default function (pi: ExtensionAPI): void {
 		]);
 		if (!choice) return;
 		if (choice.startsWith("Execute")) {
-			const remaining = planSteps.map((s) => `${s.step}. ${s.text}`).join("\n");
-			const first = planSteps[0]?.text ?? "the first step";
-			planExecuting = true;
-			switchTo("build", ctx);
-			pi.sendMessage(
-				{ customType: PLAN_EXECUTE_TYPE, content: `Execute the plan.\n\nRemaining steps:\n${remaining}\n\nStart with: ${first}.\nAfter completing a step, include a [DONE:n] tag in your response.`, display: true },
-				{ triggerTurn: true, deliverAs: "followUp" },
-			);
+			await executePlan(ctx);
 		} else if (choice === "Refine the plan") {
 			const refinement = await ctx.ui.editor("Refine the plan:", "");
 			if (refinement?.trim()) {
+				pendingPlan = candidate;
 				pi.sendUserMessage(refinement.trim(), { deliverAs: "followUp" });
 			}
 		}
-	});
-
-	// Re-persist the active mode each turn so forked/resumed sessions stay in sync.
-	pi.on("turn_start", async () => {
-		if (current) persist();
 	});
 
 	// -------------------------------------------------------------- commands
@@ -475,7 +641,8 @@ export default function (pi: ExtensionAPI): void {
 			return filtered.length > 0 ? filtered : null;
 		},
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
-			const arg = (args ?? "").trim().toLowerCase();
+			const rawArg = (args ?? "").trim();
+			const arg = rawArg.toLowerCase();
 			if (!arg) {
 				ctx.ui.notify(describeCurrent(), "info");
 				return;
@@ -483,6 +650,28 @@ export default function (pi: ExtensionAPI): void {
 			if (arg === "back") {
 				switchToPrevious(ctx);
 				return;
+			}
+			const [first, subcommand, ...rest] = rawArg.split(/\s+/);
+			if (registry.resolve(first ?? "")?.name === "plan" && subcommand) {
+				switch (subcommand.toLowerCase()) {
+					case "show":
+						showPlan(ctx);
+						return;
+					case "save":
+						if (planSteps.length === 0 && !planMarkdown.trim()) {
+							ctx.ui.notify("No plan is currently available to save.", "warning");
+							return;
+						}
+						persist();
+						ctx.ui.notify("Plan progress saved in the current session.", "info");
+						return;
+					case "export":
+						await exportPlan(rest.join(" "), ctx);
+						return;
+					case "implement":
+						await executePlan(ctx);
+						return;
+				}
 			}
 			switchTo(arg, ctx);
 		},
