@@ -24,6 +24,11 @@ export function modeColor(mode: EffectiveMode): string {
 	return MODE_COLORS[mode.name] ?? "accent";
 }
 
+/** Widget text shown immediately above the input bar, e.g. `> plan`. */
+export function modeWidgetText(mode: EffectiveMode): string {
+	return `> ${mode.name}`;
+}
+
 /** Persistent footer text, e.g. `Ⓜ plan 🔒`. */
 export function modeStatusText(mode: EffectiveMode, theme: ThemeLike): string {
 	const lock = mode.policy.allowWriteTools ? "" : " 🔒";

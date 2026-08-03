@@ -16,7 +16,7 @@ Each mode changes the agent's system instructions **and** its effective tool acc
 
 ```
 Ⓜ build 🔒   ← footer status badge (🔒 only for read-only modes)
-ask          ← widget directly above the input bar (TUI)
+> ask        ← widget directly above the input bar (TUI)
 ```
 
 ## Features
@@ -27,7 +27,7 @@ ask          ← widget directly above the input bar (TUI)
 | Per-mode thinking level | `plan`, `review`, `ask` and `debug` force high reasoning via `pi.setThinkingLevel()`; the previous level is restored when you leave |
 | Plan-step tracking | In `plan` mode the model's numbered `Plan:` steps are extracted into a progress widget (☐/☑) and the footer shows `📋 n/m`; `[DONE:n]` marks steps complete during execution |
 | Plan → build transition | After a plan is detected, an interactive prompt offers to switch to `build` and inject the plan as a kickoff message |
-| Mode widget | The current mode name is displayed right above the input bar, so you always see where you are |
+| Mode widget | The active mode is displayed with a `>` marker right above the input bar, so you always see where you are |
 | Defense-in-depth read-only enforcement | `pi.setActiveTools()` removes write/unknown tools per policy + a strict shell validator + a `tool_call` hook blocks everything else with a visible reason |
 | `/mode` command | List, switch, aliases, autocomplete (`/mode <TAB>`) |
 | Quick cycle | `alt+m` cycles to the next mode with instant visual feedback |
@@ -210,9 +210,10 @@ This mirrors pi's built-in `plan-mode` example, adapted to the multi-mode model.
   stack). Switching A→B→C then `back` returns to B; the next `back` returns to C.
 - **`--modes <name>`** is read once at startup; it overrides `defaultMode` for
   that session only.
-- **Mode widget**: the name above the input bar is TUI-only (`ctx.ui.setWidget`,
-  placement `aboveEditor`). In print/RPC modes it is skipped, and the footer
-  status badge `Ⓜ mode 🔒` remains the source of truth.
+- **Mode widget**: the active mode is shown as `> mode` above the input bar;
+  this is TUI-only (`ctx.ui.setWidget`, placement `aboveEditor`). In print/RPC
+  modes it is skipped, and the footer status badge `Ⓜ mode 🔒` remains the
+  source of truth.
 
 ## Security boundary
 
@@ -256,7 +257,7 @@ unavailable in `ask` and available in `build`.
 
 ```sh
 npm login
-npm version 0.3.0        # create the 0.3.0 release commit and tag
+npm version 0.4.0        # create the 0.4.0 release commit and tag
 npm publish                # tarball: extensions/, src/, README.md, CHANGELOG.md, LICENSE
 ```
 

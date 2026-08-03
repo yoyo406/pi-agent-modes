@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { modeNotificationText, modeStatusText, modeColor } from "../src/ui.ts";
+import { modeNotificationText, modeStatusText, modeWidgetText, modeColor } from "../src/ui.ts";
 import { applyOverride } from "../src/config.ts";
 import { ModeRegistry } from "../src/modes/registry.ts";
 
@@ -22,6 +22,11 @@ test("modeNotificationText is short and consistent", () => {
 test("modeNotificationText reflects a restricted-bash override", () => {
 	const build = applyOverride(registry.resolve("build")!, { bash: "readOnly" });
 	assert.equal(modeNotificationText(build), "mode: build ~ writes allowed, restricted bash.");
+});
+
+test("modeWidgetText marks the active mode", () => {
+	assert.equal(modeWidgetText(mode("yolo")), "> yolo");
+	assert.equal(modeWidgetText(mode("plan")), "> plan");
 });
 
 test("modeStatusText and modeColor stay intact", () => {

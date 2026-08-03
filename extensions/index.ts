@@ -42,7 +42,7 @@ import {
 import { evaluateToolCall, filterActiveTools } from "../src/guard.ts";
 import { buildModePromptSection } from "../src/instructions.ts";
 import { MODE_STATE_ENTRY_TYPE, buildStateEntry, extractState, nextPrevious } from "../src/state.ts";
-import { modeNotificationText, modeStatusText } from "../src/ui.ts";
+import { modeNotificationText, modeStatusText, modeWidgetText } from "../src/ui.ts";
 import {
 	type PlanStep,
 	extractPlanSteps,
@@ -215,10 +215,10 @@ export default function (pi: ExtensionAPI): void {
 		ctx.ui.setStatus("pi-modes", current ? modeStatusText(current, ctx.ui.theme) : undefined);
 	}
 
-	/** Show the current mode name directly above the input bar. */
+	/** Show the active mode marker and name directly above the input bar. */
 	function updateWidget(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return;
-		ctx.ui.setWidget(MODE_WIDGET_KEY, current ? [current.name] : undefined);
+		ctx.ui.setWidget(MODE_WIDGET_KEY, current ? [modeWidgetText(current)] : undefined);
 	}
 
 	/**
