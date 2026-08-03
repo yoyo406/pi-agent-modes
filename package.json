@@ -1,44 +1,55 @@
 {
-  "name": "pi-agent-modes",
-  "version": "0.2.0",
-  "description": "Switchable workflow modes for the Pi coding agent: ask, plan, build, review, debug, yolo — with real read-only enforcement, per-mode system instructions, persistence and config.",
-  "type": "module",
-  "license": "MIT",
-  "author": "",
-  "keywords": [
-    "pi-package",
-    "pi-extension",
-    "pi-coding-agent",
-    "modes",
-    "agent-modes",
-    "ask",
-    "plan",
-    "build",
-    "review",
-    "debug",
-    "yolo"
-  ],
-  "files": [
-    "extensions",
-    "src",
-    "README.md",
-    "LICENSE"
-  ],
-  "pi": {
-    "extensions": [
-      "./extensions"
-    ]
-  },
-  "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test tests/*.test.ts"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
-  },
-  "devDependencies": {
-    "@types/node": "^22.10.0",
-    "typescript": "^5.9.0"
-  }
+	"name": "pi-agent-modes",
+	"version": "0.2.0",
+	"description": "Switchable workflow modes for the Pi coding agent: ask, plan, build, review, debug, yolo — with real read-only enforcement, per-mode system instructions, persistence and config.",
+	"type": "module",
+	"license": "MIT",
+	"author": "",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"pi-coding-agent",
+		"modes",
+		"agent-modes",
+		"ask",
+		"plan",
+		"build",
+		"review",
+		"debug",
+		"yolo"
+	],
+	"files": [
+		"extensions",
+		"src",
+		"README.md",
+		"LICENSE"
+	],
+	"pi": {
+		"extensions": [
+			"./extensions"
+		]
+	},
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"test": "node --experimental-strip-types --test tests/*.test.ts"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*"
+	},
+	"devDependencies": {
+		"@types/node": "^22.10.0",
+		"typescript": "^5.9.0"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/yoyo406/pi-agent-modes.git"
+	},
+	"bugs": {
+		"url": "https://github.com/yoyo406/pi-agent-modes/issues"
+	},
+	"homepage": "https://github.com/yoyo406/pi-agent-modes#readme",
+	"publishConfig": {
+		"access": "public"
+	}
 }
