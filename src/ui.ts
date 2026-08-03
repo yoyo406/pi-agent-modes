@@ -30,12 +30,12 @@ export function modeStatusText(mode: EffectiveMode, theme: ThemeLike): string {
 	return theme.fg(modeColor(mode), `Ⓜ ${mode.name}${lock}`);
 }
 
-/** Human-readable one-liner for notifications, e.g. `Mode: plan (read-only)`. */
+/** Short mode-switch notification, e.g. `mode: build ~ full access.` */
 export function modeNotificationText(mode: EffectiveMode): string {
 	const access = mode.policy.allowWriteTools
 		? mode.policy.bash === "allow"
 			? "full access"
 			: "writes allowed, restricted bash"
-		: "read-only (write tools blocked)";
-	return `Mode: ${mode.label} — ${access}. ${mode.description}`;
+		: "read-only";
+	return `mode: ${mode.name} ~ ${access}.`;
 }
