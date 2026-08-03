@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ModeRegistry, BUILTIN_MODES } from "../src/modes/registry.ts";
+import { ModeRegistry, BUILTIN_MODES, cycleMode } from "../src/modes/registry.ts";
 import type { ModeDefinition } from "../src/types.ts";
 import { defaultPolicy } from "../src/types.ts";
 
@@ -79,4 +79,23 @@ test("BUILTIN_MODES have unique names and non-empty definitions", () => {
 		assert.equal(def?.defaultPolicy.allowWriteTools, true, `${mode} must default to write access`);
 		assert.equal(def?.defaultPolicy.bash, "allow", `${mode} must default to allowed bash`);
 	}
+});
+
+test("cycleMode wraps forward and backward through enabled modes", () => {
+	const modes = ["ask", "plan", "build", "review", "debug", "yolo"];
+	assert.equal(cycleMode(modes, "ask", 1), "plan");
+	assert.equal(cycleMode(modes, "yolo", 1), "ask");
+	assert.equal(cycleMode(modes, "yolo", -1), "debug");
+	assert.equal(cycleMode(modes, "ask", -1), "yolo");
+});
+
+test("cycleMode handles disabled modes (not in list) and edge cases", () => {
+	const modes = ["ask", "build"];
+	assert.equal(cycleMode(modes, "ask", 1), "build");
+	assert.equal(cycleMode(modes, "build", 1), "ask");
+	// current mode missing from the list
+	assert.equal(cycleMode(modes, "yolo", 1), undefined);
+	// fewer than two modes: nothing to cycle
+	assert.equal(cycleMode(["ask"], "ask", 1), undefined);
+	assert.equal(cycleMode([], "ask", 1), undefined);
 });

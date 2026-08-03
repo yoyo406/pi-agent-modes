@@ -36,7 +36,7 @@ function makeClient(sessionArgs = []) {
   return new RpcClient({
     cliPath: CLI,
     cwd: CWD,
-    args: ["-e", EXT, "--session-dir", SESSION_DIR, ...sessionArgs],
+    args: ["-ne", "-e", EXT, "--session-dir", SESSION_DIR, ...sessionArgs],
   });
 }
 
@@ -183,7 +183,7 @@ if (llm) {
     cliPath: CLI,
     cwd: `${HOOK_DIR}/project`,
     env: { PI_CODING_AGENT_DIR: `${HOOK_DIR}/agent` },
-    args: ["-e", EXT, "--session-dir", `${HOOK_DIR}/sessions`],
+    args: ["-ne", "-e", EXT, "--session-dir", `${HOOK_DIR}/sessions`],
   });
   await hookClient.start();
   await waitStartup(hookClient);

@@ -67,3 +67,20 @@ export class ModeRegistry {
 		return result;
 	}
 }
+
+/**
+ * The next mode when cycling, `direction` 1 = forward, -1 = backward.
+ * Input must contain enabled modes only (disabled modes are not switchable).
+ * Returns `undefined` when there is nothing to cycle between (< 2 modes) or
+ * when the current mode is not part of the list.
+ */
+export function cycleMode(
+	modeNames: readonly string[],
+	currentName: string,
+	direction: 1 | -1,
+): string | undefined {
+	if (modeNames.length < 2) return undefined;
+	const index = modeNames.indexOf(currentName);
+	if (index === -1) return undefined;
+	return modeNames[(index + direction + modeNames.length) % modeNames.length];
+}

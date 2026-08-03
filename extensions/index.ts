@@ -20,7 +20,7 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { AutocompleteItem, KeyId } from "@earendil-works/pi-tui";
+import { Key, type AutocompleteItem } from "@earendil-works/pi-tui";
 import {
 	CONFIG_DIR_NAME,
 	getAgentDir,
@@ -29,7 +29,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import type { EffectiveMode, ModesConfig } from "../src/types.ts";
-import { ModeRegistry } from "../src/modes/registry.ts";
+import { ModeRegistry, cycleMode } from "../src/modes/registry.ts";
 import {
 	CONFIG_FILE_NAME,
 	parseModesConfig,
@@ -43,7 +43,13 @@ import { MODE_STATE_ENTRY_TYPE, buildStateEntry, extractState, nextPrevious } fr
 import { modeNotificationText, modeStatusText } from "../src/ui.ts";
 
 /** Keyboard shortcut for "return to previous mode". */
-const MODE_BACK_SHORTCUT = "ctrl+alt+m" as KeyId;
+const MODE_BACK_SHORTCUT = Key.ctrlAlt("m");
+
+/** Keyboard shortcut for "cycle to the next mode" (quick switching). */
+const MODE_CYCLE_SHORTCUT = Key.alt("m");
+
+/** Widget shown directly above the input bar (TUI only). */
+const MODE_WIDGET_KEY = "pi-modes";
 
 /** Tools this extension manages (removed from the active set when restricted). */
 const MANAGED_TOOLS = new Set(["edit", "write", "bash"]);
@@ -88,6 +94,12 @@ export default function (pi: ExtensionAPI): void {
 		ctx.ui.setStatus("pi-modes", current ? modeStatusText(current, ctx.ui.theme) : undefined);
 	}
 
+	/** Show the current mode name directly above the input bar. */
+	function updateWidget(ctx: ExtensionContext): void {
+		if (!ctx.hasUI) return;
+		ctx.ui.setWidget(MODE_WIDGET_KEY, current ? [current.name] : undefined);
+	}
+
 	// ------------------------------------------------------------ persistence
 	function persist(): void {
 		if (!current) return;
@@ -114,9 +126,21 @@ export default function (pi: ExtensionAPI): void {
 		current = target;
 		applyActiveTools();
 		updateStatus(ctx);
+		updateWidget(ctx);
 		persist();
 		ctx.ui.notify(modeNotificationText(target), target.policy.allowWriteTools ? "info" : "warning");
 		return true;
+	}
+
+	/** Cycle to the next (1) or previous (-1) enabled mode. */
+	function cycleTo(ctx: ExtensionContext, direction: 1 | -1): void {
+		if (!current) return;
+		const next = cycleMode([...effective.keys()], current.name, direction);
+		if (!next) {
+			ctx.ui.notify("Nothing to cycle: fewer than two enabled modes.", "info");
+			return;
+		}
+		switchTo(next, ctx);
 	}
 
 	function switchToPrevious(ctx: ExtensionContext): void {
@@ -137,6 +161,7 @@ export default function (pi: ExtensionAPI): void {
 		previousMode = oldCurrent.name;
 		applyActiveTools();
 		updateStatus(ctx);
+		updateWidget(ctx);
 		persist();
 		ctx.ui.notify(modeNotificationText(target), target.policy.allowWriteTools ? "info" : "warning");
 	}
@@ -215,6 +240,7 @@ export default function (pi: ExtensionAPI): void {
 		previousMode = persisted?.previousMode;
 		applyActiveTools();
 		updateStatus(ctx);
+		updateWidget(ctx);
 		if (event.reason === "startup" || event.reason === "reload") {
 			reportIssues(ctx);
 		}
@@ -278,6 +304,11 @@ export default function (pi: ExtensionAPI): void {
 	pi.registerShortcut(MODE_BACK_SHORTCUT, {
 		description: "Return to the previous mode",
 		handler: async (ctx: ExtensionContext) => switchToPrevious(ctx),
+	});
+
+	pi.registerShortcut(MODE_CYCLE_SHORTCUT, {
+		description: "Cycle to the next mode (ask -> plan -> build -> review -> debug -> yolo)",
+		handler: async (ctx: ExtensionContext) => cycleTo(ctx, 1),
 	});
 
 	pi.registerFlag("modes", {

@@ -15,7 +15,8 @@ Each mode changes the agent's system instructions **and** its real tool access:
   is resumed (fork-aware).
 
 ```
-Ⓜ build 🔒   ← status line badge (🔒 only for read-only modes)
+Ⓜ build 🔒   ← footer status badge (🔒 only for read-only modes)
+ask          ← widget directly above the input bar (TUI)
 ```
 
 ## Features
@@ -23,8 +24,10 @@ Each mode changes the agent's system instructions **and** its real tool access:
 | Feature | Description |
 | --- | --- |
 | 6 built-in modes | `ask`, `plan`, `build` (alias `act`), `review` (alias `audit`), `debug` (alias `fix`), `yolo` (aliases `autopilot`/`go`) |
+| Mode widget | The current mode name is displayed right above the input bar, so you always see where you are |
 | Real read-only enforcement | `pi.setActiveTools()` removes `edit`/`write`/`bash` per policy + a `tool_call` hook blocks everything else with a visible reason |
 | `/mode` command | List, switch, aliases, autocomplete (`/mode <TAB>`) |
+| Quick cycle | `alt+m` cycles to the next mode with instant visual feedback |
 | `/mode back` | Return to the previous mode (toggle semantics, also `ctrl+alt+m`) |
 | Persistence | Mode is written to the session (`pi-modes` entry) and restored on resume, including forked sessions |
 | Config | Per-project `.pi/modes.config.json` (trust-guarded) + global `~/.pi/agent/modes.config.json` |
@@ -36,7 +39,7 @@ Each mode changes the agent's system instructions **and** its real tool access:
 Requires pi ≥ 0.83 (tested on 0.83.0).
 
 ```sh
-# from npm (once published)
+# from npm
 pi install npm:pi-agent-modes
 
 # or from a local checkout
@@ -58,9 +61,15 @@ The extension is picked up automatically on the next session. Verify with:
 | --- | --- |
 | Show current mode | `/mode` |
 | Switch mode | `/mode plan` |
+| Cycle to next mode | `alt+m` (ask → plan → build → review → debug → yolo → ask) |
 | Return to previous mode | `/mode back` or `ctrl+alt+m` |
 | Aliases | `act` = `build`, `audit` = `review`, `fix` = `debug`, `autopilot`/`go` = `yolo` |
 | Start in a mode | `pi --modes review` |
+
+`alt+m` was chosen because `tab`, `alt+tab` and `ctrl+tab` are already taken
+by the input/autocomplete, the OS and the terminal. It is free in pi's
+default keybindings and acts as a mode cycler: each tap moves to the next
+mode, and the widget above the input bar updates instantly.
 
 ### The modes
 
@@ -148,6 +157,9 @@ policy → `blockUnknownTools` (default `false`; `allowTools` always wins).
   stack). Switching A→B→C then `back` returns to B; the next `back` returns to C.
 - **`--modes <name>`** is read once at startup; it overrides `defaultMode` for
   that session only.
+- **Mode widget**: the name above the input bar is TUI-only (`ctx.ui.setWidget`,
+  placement `aboveEditor`). In print/RPC modes it is skipped, and the footer
+  status badge `Ⓜ mode 🔒` remains the source of truth.
 
 ## Development
 
@@ -180,7 +192,8 @@ The package follows the pi package conventions (`docs/packages.md`): the
 
 - Tested with pi **0.83.0** (`@earendil-works/pi-coding-agent`), node 22.
 - The `--modes` flag name avoids clashing with pi's own `--mode` flag.
-- The `ctrl+alt+m` shortcut is free in pi's default keybindings.
+- Shortcuts: `alt+m` (cycle) and `ctrl+alt+m` (back) are free in pi's default
+  keybindings — `tab`/`alt+tab`/`ctrl+tab`/`shift+tab` are not.
 
 ## License
 
