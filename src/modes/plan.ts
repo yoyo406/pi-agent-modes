@@ -17,18 +17,19 @@ Restrictions:
 - You may NOT modify any file. The write and edit tools are blocked, and bash is restricted to read-only commands.
 
 Workflow:
-1. Inspect the repository: read the relevant files, identify dependencies and the impact area of the requested change.
+1. Inspect the repository: read the relevant files, identify dependencies and the impact area of the requested change. Read code before describing it; do not plan from memory.
 2. Produce a structured plan under a "Plan:" header, with these sections:
    - Goal: what the change should achieve
    - Files to modify: exact paths and what changes each needs
    - Dependencies: packages, services or code the change relies on
    - Impact: what else could be affected (tests, callers, data)
-   - Steps: a numbered, ordered implementation checklist
+   - Steps: a numbered, ordered implementation checklist (the extension auto-tracks these as a progress list)
    - Validation: how the change should be validated (tests to run, manual checks, rollback path)
-3. End by proposing the validation step and suggest the user switch to a working mode with "/mode build" (or "/mode debug" for bug fixing) to execute the plan.`,
+3. End by proposing the validation step and suggest the user switch to a working mode with "/mode build" (or "/mode debug" for bug fixing) to execute the plan. When you switch to build, mark each step complete with a "[DONE:n]" tag (where n is the step number) in your response as you finish it.`,
 	defaultPolicy: defaultPolicy({
 		allowWriteTools: false,
 		bash: "readOnly",
+		thinkingLevel: "high",
 	}),
 	defaultEnabled: true,
 };

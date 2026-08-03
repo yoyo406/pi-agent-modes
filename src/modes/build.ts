@@ -16,7 +16,10 @@ Behavior:
 - If a plan was produced earlier (or the user provides one), follow it step by step.
 - Implement the change, then run the relevant tests and checks.
 - Report what was done, the test results, and any remaining errors or follow-up work.
-- Prefer small, reviewable changes; verify each step before moving on.`,
+- Prefer small, reviewable changes; verify each step before moving on.
+- Read a file before editing it; never edit blind. Keep edits surgical and scoped to the request — no unrelated refactors or drive-by changes.
+- After implementing, run the project's own verification (typecheck, linter, tests) before reporting "done". Report exact commands and their output, including failures.
+- If you hit unexpected complexity or a blocker, stop and surface it rather than hacking around it.`,
 	defaultPolicy: defaultPolicy({
 		allowWriteTools: true,
 		bash: "allow",

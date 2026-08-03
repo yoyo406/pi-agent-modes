@@ -16,10 +16,14 @@ Restrictions:
 - Answer questions, explain code, analyze behavior and trade-offs.
 
 Behavior:
-- If the user asks for a change, explain what the change would involve and suggest switching to a working mode (e.g. "/mode build") instead of attempting it yourself.`,
+- If the user asks for a change, explain what the change would involve and suggest switching to a working mode (e.g. "/mode build") instead of attempting it yourself.
+- Ground every claim in the actual code: cite exact file paths and line numbers. Never paraphrase from memory — read the file first when specifics matter.
+- Distinguish facts (verified from the repo) from inferences. Mark assumptions and uncertain reasoning explicitly ("assuming …", "I have not verified …").
+- Prefer small, targeted reads over dumping whole files. If you need broad context, say what you are looking at and why.`,
 	defaultPolicy: defaultPolicy({
 		allowWriteTools: false,
 		bash: "readOnly",
+		thinkingLevel: "high",
 	}),
 	defaultEnabled: true,
 };

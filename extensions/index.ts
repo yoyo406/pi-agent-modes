@@ -27,8 +27,9 @@ import {
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionContext,
+	type ThemeColor,
 } from "@earendil-works/pi-coding-agent";
-import type { EffectiveMode, ModesConfig } from "../src/types.ts";
+import type { EffectiveMode, ModesConfig, ThinkingLevel } from "../src/types.ts";
 import { ModeRegistry, cycleMode } from "../src/modes/registry.ts";
 import {
 	CONFIG_FILE_NAME,
@@ -41,6 +42,13 @@ import { evaluateToolCall, filterActiveTools } from "../src/guard.ts";
 import { buildModePromptSection } from "../src/instructions.ts";
 import { MODE_STATE_ENTRY_TYPE, buildStateEntry, extractState, nextPrevious } from "../src/state.ts";
 import { modeNotificationText, modeStatusText } from "../src/ui.ts";
+import {
+	type PlanStep,
+	extractPlanSteps,
+	markCompletedSteps,
+	completedCount,
+	renderStepLines,
+} from "../src/modes/plan-tracker.ts";
 
 /** Keyboard shortcut for "return to previous mode". */
 const MODE_BACK_SHORTCUT = Key.ctrlAlt("m");
@@ -51,12 +59,43 @@ const MODE_CYCLE_SHORTCUT = Key.alt("m");
 /** Widget shown directly above the input bar (TUI only). */
 const MODE_WIDGET_KEY = "pi-modes";
 
+/** Widget showing the plan-mode step checklist. */
+const PLAN_WIDGET_KEY = "pi-modes-plan";
+
+/** Custom message type used to kick off plan execution after a switch. */
+const PLAN_EXECUTE_TYPE = "pi-modes-plan-execute";
+
 /** Tools this extension manages (removed from the active set when restricted). */
 const MANAGED_TOOLS = new Set(["edit", "write", "bash"]);
 
 /** Does the mode need the active tool set to be filtered? `blockTools` entries are handled by the tool_call hook, not by list filtering. */
 function isRestricting(mode: EffectiveMode): boolean {
 	return !mode.policy.allowWriteTools || mode.policy.bash === "deny" || mode.policy.blockUnknownTools;
+}
+
+/**
+ * Extract concatenated text from an assistant message's content blocks, without
+ * importing pi-ai/pi-agent-core types (kept dependency-free). Returns `null` for
+ * non-assistant messages or messages with no text content.
+ */
+function assistantText(message: unknown): string | null {
+	if (typeof message !== "object" || message === null) return null;
+	const msg = message as { role?: unknown; content?: unknown };
+	if (msg.role !== "assistant") return null;
+	const content = msg.content;
+	if (!Array.isArray(content)) return null;
+	const parts: string[] = [];
+	for (const block of content) {
+		if (
+			typeof block === "object" &&
+			block !== null &&
+			(block as { type?: unknown }).type === "text" &&
+			typeof (block as { text?: unknown }).text === "string"
+		) {
+			parts.push((block as { text: string }).text);
+		}
+	}
+	return parts.length > 0 ? parts.join("\n") : null;
 }
 
 export default function (pi: ExtensionAPI): void {
@@ -69,6 +108,14 @@ export default function (pi: ExtensionAPI): void {
 	let previousMode: string | undefined;
 	/** Active tools captured when a restricting mode was entered. */
 	let savedTools: string[] | undefined;
+	/** The thinking level active before a mode forced its own (to restore on exit). */
+	let savedThinkingLevel: ThinkingLevel | undefined;
+	/** Whether a mode is currently forcing a thinking level. */
+	let thinkingOverridden = false;
+	/** Plan steps tracked while in plan mode / execution. */
+	let planSteps: PlanStep[] = [];
+	/** True once a plan has been detected and execution is under way. */
+	let planExecuting = false;
 
 	// ------------------------------------------------------------------ tools
 	function applyActiveTools(): void {
@@ -89,6 +136,28 @@ export default function (pi: ExtensionAPI): void {
 		pi.setActiveTools(filterActiveTools(pi.getActiveTools(), current.policy, customTools));
 	}
 
+	/**
+	 * Force the mode's thinking level (if any) via `pi.setThinkingLevel()`.
+	 * Saves the user's previous level so it can be restored when leaving.
+	 */
+	function applyThinkingLevel(): void {
+		const level = current?.policy.thinkingLevel;
+		if (!level) {
+			// Mode does not force a level: restore the saved one, if any.
+			if (thinkingOverridden && savedThinkingLevel !== undefined) {
+				pi.setThinkingLevel(savedThinkingLevel);
+			}
+			thinkingOverridden = false;
+			savedThinkingLevel = undefined;
+			return;
+		}
+		if (!thinkingOverridden) {
+			savedThinkingLevel = pi.getThinkingLevel();
+			thinkingOverridden = true;
+		}
+		pi.setThinkingLevel(level);
+	}
+
 	// -------------------------------------------------------------------- UI
 	function updateStatus(ctx: ExtensionContext): void {
 		ctx.ui.setStatus("pi-modes", current ? modeStatusText(current, ctx.ui.theme) : undefined);
@@ -98,6 +167,38 @@ export default function (pi: ExtensionAPI): void {
 	function updateWidget(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return;
 		ctx.ui.setWidget(MODE_WIDGET_KEY, current ? [current.name] : undefined);
+	}
+
+	/**
+	 * Render the plan step checklist above the input bar while a plan is being
+	 * tracked, and reflect completion in the footer status. Cleared otherwise.
+	 */
+	/** Tracked plan is visible while in plan mode or during plan execution. */
+	function planWidgetVisible(): boolean {
+		return planSteps.length > 0 && (current?.name === "plan" || planExecuting);
+	}
+
+	/**
+	 * Render the plan step checklist above the input bar while a plan is being
+	 * tracked, and reflect completion in the footer status. Cleared otherwise.
+	 */
+	function updatePlanWidget(ctx: ExtensionContext): void {
+		if (!ctx.hasUI) {
+			// Footer status is the source of truth in non-TUI modes.
+			if (planWidgetVisible()) {
+				ctx.ui.setStatus(PLAN_WIDGET_KEY, ctx.ui.theme.fg("accent", `📋 ${completedCount(planSteps)}/${planSteps.length}`));
+			} else {
+				ctx.ui.setStatus(PLAN_WIDGET_KEY, undefined);
+			}
+			return;
+		}
+		if (planWidgetVisible()) {
+			ctx.ui.setWidget(PLAN_WIDGET_KEY, renderStepLines(planSteps, (c, t) => ctx.ui.theme.fg(c as ThemeColor, t)));
+			ctx.ui.setStatus(PLAN_WIDGET_KEY, ctx.ui.theme.fg("accent", `📋 ${completedCount(planSteps)}/${planSteps.length}`));
+		} else {
+			ctx.ui.setWidget(PLAN_WIDGET_KEY, undefined);
+			ctx.ui.setStatus(PLAN_WIDGET_KEY, undefined);
+		}
 	}
 
 	// ------------------------------------------------------------ persistence
@@ -125,8 +226,16 @@ export default function (pi: ExtensionAPI): void {
 		previousMode = nextPrevious(current?.name, target.name);
 		current = target;
 		applyActiveTools();
+		applyThinkingLevel();
+		// Entering a non-plan mode clears tracked plan steps, unless we are
+		// mid-execution (the Execute flow keeps tracking [DONE:n] in build).
+		if (target.name !== "plan" && !planExecuting) {
+			planSteps = [];
+			planExecuting = false;
+		}
 		updateStatus(ctx);
 		updateWidget(ctx);
+		updatePlanWidget(ctx);
 		persist();
 		ctx.ui.notify(modeNotificationText(target), target.policy.allowWriteTools ? "info" : "warning");
 		return true;
@@ -160,8 +269,14 @@ export default function (pi: ExtensionAPI): void {
 		current = target;
 		previousMode = oldCurrent.name;
 		applyActiveTools();
+		applyThinkingLevel();
+		if (target.name !== "plan" && !planExecuting) {
+			planSteps = [];
+			planExecuting = false;
+		}
 		updateStatus(ctx);
 		updateWidget(ctx);
+		updatePlanWidget(ctx);
 		persist();
 		ctx.ui.notify(modeNotificationText(target), target.policy.allowWriteTools ? "info" : "warning");
 	}
@@ -169,20 +284,23 @@ export default function (pi: ExtensionAPI): void {
 	function describeCurrent(): string {
 		if (!current) return "No mode active.";
 		const lines: string[] = [];
+		const aliasText = current.aliases.length > 0 ? ` (aliases: ${current.aliases.join(", ")})` : "";
+		const levelText = current.policy.thinkingLevel ? ` — thinking: ${current.policy.thinkingLevel}` : "";
 		lines.push(
-			`Current mode: ${current.name}${current.policy.allowWriteTools ? "" : " (read-only)"}${
+			`Current mode: ${current.name}${current.policy.allowWriteTools ? "" : " (read-only)"}${aliasText}${levelText}${
 				previousMode ? ` — previous: ${previousMode}` : ""
 			}`,
 		);
 		lines.push("");
 		lines.push("Available modes:");
 		for (const mode of effective.values()) {
-			const marker = mode.name === current.name ? " *" : "  ";
+			const marker = mode.name === current.name ? " * " : "   ";
 			const access = mode.policy.allowWriteTools ? "" : " 🔒";
-			lines.push(`  ${marker} ${mode.name.padEnd(8)}${access} ${mode.description}`);
+			const aliases = mode.aliases.length > 0 ? ` [${mode.aliases.join(", ")}]` : "";
+			lines.push(`${marker}${mode.name.padEnd(8)}${access}${aliases}  ${mode.description}`);
 		}
 		lines.push("");
-		lines.push("Use /mode <name> to switch, /mode back to return to the previous mode.");
+		lines.push("Switch: /mode <name|alias>   |   cycle: alt+m   |   back: /mode back or ctrl+alt+m");
 		return lines.join("\n");
 	}
 
@@ -239,8 +357,10 @@ export default function (pi: ExtensionAPI): void {
 		current = initial;
 		previousMode = persisted?.previousMode;
 		applyActiveTools();
+		applyThinkingLevel();
 		updateStatus(ctx);
 		updateWidget(ctx);
+		updatePlanWidget(ctx);
 		if (event.reason === "startup" || event.reason === "reload") {
 			reportIssues(ctx);
 		}
@@ -252,6 +372,10 @@ export default function (pi: ExtensionAPI): void {
 		current = undefined;
 		previousMode = undefined;
 		savedTools = undefined;
+		savedThinkingLevel = undefined;
+		thinkingOverridden = false;
+		planSteps = [];
+		planExecuting = false;
 	});
 
 	// Read-only enforcement: blocks write tools and unsafe bash.
@@ -272,17 +396,80 @@ export default function (pi: ExtensionAPI): void {
 		return { systemPrompt: event.systemPrompt + "\n\n" + buildModePromptSection(current) };
 	});
 
+	/**
+	 * Plan tracking: when an assistant message in `plan` mode contains a
+	 * "Plan:" section, extract its numbered steps, show a progress widget, and
+	 * offer to execute (which switches to `build` and injects the plan).
+	 * `[DONE:n]` markers mark steps complete during execution.
+	 */
+	pi.on("message_end", async (event, ctx) => {
+		if (!current) return;
+		const text = assistantText(event.message);
+		if (!text) return;
+
+		// Mark completed steps from [DONE:n] markers (execution phase).
+		if (planSteps.length > 0) {
+			const newlyDone = markCompletedSteps(text, planSteps);
+			if (newlyDone > 0) updatePlanWidget(ctx);
+		}
+
+		// Only auto-detect a fresh plan while sitting in `plan` mode and not yet executing.
+		if (current.name !== "plan" || planExecuting) return;
+		const fresh = extractPlanSteps(text);
+		if (fresh.length === 0) return;
+		planSteps = fresh;
+		updatePlanWidget(ctx);
+		ctx.ui.notify(`[modes] Plan detected: ${fresh.length} step(s).`, "info");
+
+		// Offer an interactive transition (TUI only — skip in print/RPC).
+		if (!ctx.hasUI) return;
+		const choice = await ctx.ui.select("Plan mode — what next?", [
+			"Execute the plan (switch to build)",
+			"Stay in plan mode",
+			"Refine the plan",
+		]);
+		if (!choice) return;
+		if (choice.startsWith("Execute")) {
+			const remaining = planSteps.map((s) => `${s.step}. ${s.text}`).join("\n");
+			const first = planSteps[0]?.text ?? "the first step";
+			planExecuting = true;
+			switchTo("build", ctx);
+			pi.sendMessage(
+				{ customType: PLAN_EXECUTE_TYPE, content: `Execute the plan.\n\nRemaining steps:\n${remaining}\n\nStart with: ${first}.\nAfter completing a step, include a [DONE:n] tag in your response.`, display: true },
+				{ triggerTurn: true, deliverAs: "followUp" },
+			);
+		} else if (choice === "Refine the plan") {
+			const refinement = await ctx.ui.editor("Refine the plan:", "");
+			if (refinement?.trim()) {
+				pi.sendUserMessage(refinement.trim(), { deliverAs: "followUp" });
+			}
+		}
+	});
+
+	// Re-persist the active mode each turn so forked/resumed sessions stay in sync.
+	pi.on("turn_start", async () => {
+		if (current) persist();
+	});
+
 	// -------------------------------------------------------------- commands
 	pi.registerCommand("mode", {
 		description: "Show or switch the active mode (ask, plan, build, review, debug, yolo)",
 		getArgumentCompletions: (prefix: string): AutocompleteItem[] | null => {
 			const items: AutocompleteItem[] = [
 				{ value: "back", label: "back", description: "Return to the previous mode" },
-				...[...effective.values()].map((mode) => ({
-					value: mode.name,
-					label: mode.name,
-					description: mode.description,
-				})),
+				...[...effective.values()].flatMap((mode) => {
+					const itemsForMode: AutocompleteItem[] = [
+						{ value: mode.name, label: mode.name, description: mode.description },
+					];
+					for (const alias of mode.aliases) {
+						itemsForMode.push({
+							value: alias,
+							label: alias,
+							description: `alias of ${mode.name}: ${mode.description}`,
+						});
+					}
+					return itemsForMode;
+				}),
 			];
 			const filtered = items.filter((item) => item.value.startsWith(prefix.toLowerCase()));
 			return filtered.length > 0 ? filtered : null;

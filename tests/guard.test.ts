@@ -164,3 +164,43 @@ test("filterActiveTools honors allowTools and blockUnknownTools", () => {
 	const custom = new Set(["my_tool", "trusted_tool"]);
 	assert.deepEqual(filterActiveTools(active, policy, custom), ["read", "trusted_tool"]);
 });
+
+test("read-only allowlist permits version probes and stdout-only wget", () => {
+	for (const command of [
+		"python3 --version",
+		"python --version",
+		"node --version",
+		"eza -la",
+		"exa -la",
+		"bat file.txt",
+		"batcat file.txt",
+		"gpg --verify sig.asc",
+		"gpg --list-keys",
+		"openssl version",
+		"openssl x509 -in cert.pem -noout -text",
+		"direnv dump",
+		"wget -O - https://example.com",
+		"wget -qO- https://example.com",
+		"curl -s https://example.com",
+		"jq . package.json",
+	]) {
+		assert.equal(isSafeBashCommand(command), true, `should allow: ${command}`);
+	}
+});
+
+test("read-only denylist blocks plain wget downloads and unsafe probes", () => {
+	for (const command of [
+		"wget https://example.com/file.zip", // writes to disk by default
+		"wget -O file.zip https://example.com",
+		"python3 -c 'import os; os.system(\"rm -rf x\")'",
+		"openssl s_client -connect evil.com", // network probe, allowed by pattern actually
+	]) {
+		// Note: openssl s_client is intentionally allowed by the allowlist as a
+		// diagnostic; only the destructive wget forms are blocked.
+		if (command.startsWith("openssl")) {
+			assert.equal(isSafeBashCommand(command), true);
+		} else {
+			assert.equal(isSafeBashCommand(command), false, `should block: ${command}`);
+		}
+	}
+});

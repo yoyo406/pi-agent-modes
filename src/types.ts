@@ -10,6 +10,12 @@
 export type BashPolicy = "allow" | "readOnly" | "deny";
 
 /**
+ * Reasoning/thinking level a mode can force via `pi.setThinkingLevel()`.
+ * `undefined` (the default) leaves the current level untouched.
+ */
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+/**
  * Tool-level policy of a mode. This is the only layer that can *technically*
  * enforce read-only behavior: Pi has no native permission system, so blocking
  * happens in the `tool_call` hook (and by removing tools from the active set).
@@ -29,6 +35,12 @@ export interface ModePolicy {
    * introspect; enable this for strict read-only guarantees.
    */
   blockUnknownTools: boolean;
+  /**
+   * Optional reasoning level forced while this mode is active (via
+   * `pi.setThinkingLevel()`). `undefined` leaves the current level untouched,
+   * so working modes do not override user-chosen levels by default.
+   */
+  thinkingLevel?: ThinkingLevel;
 }
 
 /**
@@ -65,6 +77,8 @@ export interface ModeConfigOverride {
   blockTools?: string[];
   allowTools?: string[];
   blockUnknownTools?: boolean;
+  /** Override the mode's forced thinking level (or `null` to clear it). */
+  thinkingLevel?: ThinkingLevel | null;
 }
 
 /** Root shape of `modes.config.json`. */

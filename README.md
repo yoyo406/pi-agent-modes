@@ -24,12 +24,15 @@ ask          ← widget directly above the input bar (TUI)
 | Feature | Description |
 | --- | --- |
 | 6 built-in modes | `ask`, `plan`, `build` (alias `act`), `review` (alias `audit`), `debug` (alias `fix`), `yolo` (aliases `autopilot`/`go`) |
+| Per-mode thinking level | `plan`, `review`, `ask` and `debug` force high reasoning via `pi.setThinkingLevel()`; the previous level is restored when you leave |
+| Plan-step tracking | In `plan` mode the model's numbered `Plan:` steps are extracted into a progress widget (☐/☑) and the footer shows `📋 n/m`; `[DONE:n]` marks steps complete during execution |
+| Plan → build transition | After a plan is detected, an interactive prompt offers to switch to `build` and inject the plan as a kickoff message |
 | Mode widget | The current mode name is displayed right above the input bar, so you always see where you are |
 | Real read-only enforcement | `pi.setActiveTools()` removes `edit`/`write`/`bash` per policy + a `tool_call` hook blocks everything else with a visible reason |
 | `/mode` command | List, switch, aliases, autocomplete (`/mode <TAB>`) |
 | Quick cycle | `alt+m` cycles to the next mode with instant visual feedback |
 | `/mode back` | Return to the previous mode (toggle semantics, also `ctrl+alt+m`) |
-| Persistence | Mode is written to the session (`pi-modes` entry) and restored on resume, including forked sessions |
+| Persistence | Mode is written to the session (`pi-modes` entry) on every switch **and** re-persisted each turn, restored on resume, including forked sessions |
 | Config | Per-project `.pi/modes.config.json` (trust-guarded) + global `~/.pi/agent/modes.config.json` |
 | `--modes <name>` flag | Start a session in a specific mode |
 | Per-mode instructions | Every mode has its own system-prompt section; override/extend via config |
@@ -73,14 +76,14 @@ mode, and the widget above the input bar updates instantly.
 
 ### The modes
 
-| Mode | Read-only | Description |
-| --- | --- | --- |
-| `ask` | 🔒 yes | Discussion, questions, explanation. No file changes, read-only bash. |
-| `plan` | 🔒 yes | Explore, research, produce an implementation plan. No file changes. |
-| `build` | no | Implement features. Full tool access. |
-| `review` | 🔒 yes | Structured code review. Read-only. |
-| `debug` | no | Systematic reproduction + root-cause analysis + minimal fixes. Full access. |
-| `yolo` | no | Autonomous end-to-end work. Full access, minimal confirmations. |
+| Mode | Read-only | Thinking | Description |
+| --- | --- | --- | --- |
+| `ask` | 🔒 yes | high | Discussion, questions, explanation. No file changes, read-only bash. |
+| `plan` | 🔒 yes | high | Explore, research, produce an implementation plan (steps auto-tracked). No file changes. |
+| `build` | no | — | Implement features. Full tool access. |
+| `review` | 🔒 yes | high | Structured code review (P0/P1/P2 severity). Read-only. |
+| `debug` | no | high | Systematic reproduction + root-cause analysis + minimal fixes. Full access. |
+| `yolo` | no | — | Autonomous end-to-end work. Full access, minimal confirmations. |
 
 ### Read-only enforcement (defense in depth)
 
@@ -118,7 +121,8 @@ Config files are JSON with this shape:
       "bash": "readOnly",            // optional: "allow" | "readOnly" | "deny"
       "allowTools": [],              // optional: always-allowed tool names
       "blockTools": ["read"],        // optional: tools the hook must block
-      "blockUnknownTools": false     // optional: block all non-builtin tools
+      "blockUnknownTools": false,    // optional: block all non-builtin tools
+      "thinkingLevel": "high"        // optional: force a reasoning level (off|minimal|low|medium|high|xhigh|max; null to clear)
     }
   }
 }
@@ -147,6 +151,49 @@ policy → `blockUnknownTools` (default `false`; `allowTools` always wins).
   }
 }
 ```
+
+## Thinking levels
+
+Some modes force a reasoning level via `pi.setThinkingLevel()` so the model
+thinks harder about the kind of task the mode is for:
+
+| Mode | Forced level |
+| --- | --- |
+| `ask` | `high` |
+| `plan` | `high` |
+| `review` | `high` |
+| `debug` | `high` |
+| `build` | _(unchanged — respects your choice)_ |
+| `yolo` | _(unchanged — respects your choice)_ |
+
+The level you had before entering a forced mode is restored when you leave it.
+Override or clear per mode in `modes.config.json`:
+
+```json
+{
+  "modes": {
+    "yolo": { "thinkingLevel": "medium" },
+    "ask": { "thinkingLevel": null }
+  }
+}
+```
+
+## Plan-step tracking
+
+While `plan` mode is active, the model is asked to produce a numbered plan under
+a `Plan:` header. The extension extracts those steps and shows a checklist
+widget above the input bar (`☐` pending / `☑` done) plus a footer counter
+(`📋 n/m`).
+
+- When a plan is detected you get an interactive prompt: **Execute the plan**,
+  **Stay in plan mode**, or **Refine the plan**.
+- Choosing *Execute* switches to `build` and injects the remaining steps as a
+  kickoff message.
+- During execution the model marks each step complete with a `[DONE:n]` tag;
+  the widget updates live.
+
+This mirrors pi's built-in `plan-mode` example, adapted to the multi-mode model.
+
 
 ## Behavior notes
 

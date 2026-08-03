@@ -155,10 +155,15 @@ const SAFE_PATTERNS: RegExp[] = [
 	/^\s*(yarn\s+(list|info|why|audit))\b/,
 	/^\s*(pnpm\s+(list|ls|view|info|search|outdated|audit))\b/,
 	/^\s*(python3?|node|deno|bun)\s+--version\b/,
-	/^\s*(curl|wget)\b/,
+	/^\s*(curl)\b/,
+	/^\s*(wget)\s+(?:-qO-|-O-|-O\s+-)\s/,
 	/^\s*(jq|yq)\b/,
 	/^\s*(awk|sed\s+-n|perl\s+-ne)\b/,
 	/^\s*(bat|batcat)\b/,
+	/^\s*(eza|exa)\b/,
+	/^\s*(gpg)\s+(?:--verify|--list-keys|--list-sigs)\b/,
+	/^\s*(direnv)\s+(?:dump|status)\b/,
+	/^\s*(openssl)\s+(?:x509|rsa|ec|s_client|version)\b/,
 ];
 
 const DESTRUCTIVE_PATTERNS: RegExp[] = [

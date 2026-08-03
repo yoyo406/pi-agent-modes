@@ -1,7 +1,7 @@
 {
 	"name": "pi-agent-modes",
-	"version": "0.2.1",
-	"description": "Switchable workflow modes for the Pi coding agent: ask, plan, build, review, debug, yolo — with real read-only enforcement, per-mode system instructions, persistence and config.",
+	"version": "0.2.3",
+	"description": "Switchable workflow modes for the Pi coding agent: ask, plan, build, review, debug, yolo — with real read-only enforcement, per-mode system instructions and thinking levels, plan-step tracking, persistence and config.",
 	"type": "module",
 	"license": "MIT",
 	"author": "",

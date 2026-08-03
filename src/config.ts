@@ -1,4 +1,4 @@
-import type { ModesConfig, ModeConfigOverride, ModeDefinition, EffectiveMode, ModePolicy } from "./types.ts";
+import type { ModesConfig, ModeConfigOverride, ModeDefinition, EffectiveMode, ModePolicy, ThinkingLevel } from "./types.ts";
 import type { ModeRegistry } from "./modes/registry.ts";
 
 /** Config file name inside the pi config dir / project `.pi` dir. */
@@ -6,6 +6,18 @@ export const CONFIG_FILE_NAME = "modes.config.json";
 
 /** Invalid bash policy values are rejected here. */
 const BASH_POLICIES = new Set(["allow", "readOnly", "deny"]);
+
+/** Valid thinking levels a config may force. `null` clears a mode default. */
+const THINKING_LEVELS = new Set<ThinkingLevel | null>([
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+	null,
+]);
 
 export interface ConfigValidationIssue {
 	path: string;
@@ -94,6 +106,13 @@ function validateOverride(name: string, override: ModeConfigOverride, source: st
 		issues.push({ path: `${path}.blockUnknownTools`, message: "blockUnknownTools must be a boolean." });
 		delete override.blockUnknownTools;
 	}
+	if (override.thinkingLevel !== undefined && !THINKING_LEVELS.has(override.thinkingLevel)) {
+		issues.push({
+			path: `${path}.thinkingLevel`,
+			message: `thinkingLevel must be one of: off, minimal, low, medium, high, xhigh, max (or null to clear); got ${JSON.stringify(override.thinkingLevel)}.`,
+		});
+		delete override.thinkingLevel;
+	}
 }
 
 /** Apply a config override on top of a mode definition. */
@@ -104,6 +123,8 @@ export function applyOverride(mode: ModeDefinition, override: ModeConfigOverride
 		blockTools: override?.blockTools ?? mode.defaultPolicy.blockTools,
 		allowTools: override?.allowTools ?? mode.defaultPolicy.allowTools,
 		blockUnknownTools: override?.blockUnknownTools ?? mode.defaultPolicy.blockUnknownTools,
+		// `null` explicitly clears a mode default; `undefined` falls back to it.
+		thinkingLevel: override?.thinkingLevel !== undefined ? (override.thinkingLevel ?? undefined) : mode.defaultPolicy.thinkingLevel,
 	};
 	const baseInstructions = override?.instructions ?? mode.instructions;
 	const extra = override?.extraInstructions ?? [];

@@ -130,3 +130,45 @@ test("config can disable every mode; pickInitialMode returns undefined", () => {
 	assert.equal(effective.size, 0);
 	assert.equal(pickInitialMode(effective, undefined, undefined, undefined, issues), undefined);
 });
+
+test("applyOverride accepts a thinkingLevel override", () => {
+	const registry = new ModeRegistry();
+	const ask = registry.resolve("ask")!;
+	// Built-in ask has no forced level; override adds one.
+	const effective = applyOverride(ask, { thinkingLevel: "high" });
+	assert.equal(effective.policy.thinkingLevel, "high");
+});
+
+test("applyOverride clears a mode's thinkingLevel with null", () => {
+	const registry = new ModeRegistry();
+	const plan = registry.resolve("plan")!; // built-in: thinkingLevel "high"
+	assert.equal(plan.defaultPolicy.thinkingLevel, "high");
+	const effective = applyOverride(plan, { thinkingLevel: null });
+	assert.equal(effective.policy.thinkingLevel, undefined);
+});
+
+test("applyOverride with no override keeps the built-in thinkingLevel", () => {
+	const registry = new ModeRegistry();
+	const plan = applyOverride(registry.resolve("plan")!, undefined);
+	assert.equal(plan.policy.thinkingLevel, "high");
+	const build = applyOverride(registry.resolve("build")!, undefined);
+	assert.equal(build.policy.thinkingLevel, undefined);
+});
+
+test("parseModesConfig validates thinkingLevel and drops invalid values", () => {
+	const { config, issues } = parseModesConfig(
+		JSON.stringify({
+			modes: {
+				ask: { thinkingLevel: "high" },
+				plan: { thinkingLevel: "sometimes" },
+				build: { thinkingLevel: null },
+			},
+		}),
+		"test.json",
+	);
+	assert.equal(config.modes?.ask?.thinkingLevel, "high");
+	assert.equal(config.modes?.plan?.thinkingLevel, undefined); // invalid, dropped
+	assert.equal(config.modes?.build?.thinkingLevel, null); // null is valid (clear)
+	assert.equal(issues.length, 1);
+	assert.match(issues[0]!.message, /thinkingLevel/);
+});
